@@ -1,3 +1,33 @@
+# Hermes Agent: upstream contribution workspace
+
+This is Cossackx's contribution fork of
+[Nous Research's Hermes Agent](https://github.com/NousResearch/hermes-agent).
+The Hermes product, core capabilities, and documentation below belong to the
+upstream project and its contributors.
+
+## Proposed contributions
+
+The following pull requests were open and unmerged as of September 6, 2026:
+
+- [Normalize CRLF and CR in decoded ACP text resources](https://github.com/NousResearch/hermes-agent/pull/80690).
+- [Resolve Windows Local AppData through the known-folder API when the environment variable is absent](https://github.com/NousResearch/hermes-agent/pull/80688).
+- [Repair a dangling SQLite trigger during a Kanban table rebuild](https://github.com/NousResearch/hermes-agent/pull/95208).
+
+Follow each pull request for its current review status, diff, and checks.
+These are proposed contributions; their presence here does not imply upstream
+acceptance or inclusion in this fork's default branch.
+
+The [Windows reliability case study](https://github.com/Cossackx/Cossackx/blob/main/projects/hermes-windows.md)
+describes a separate maintained body of operational work and how it informed
+these contributions. Work is developed with AI assistance.
+
+## Upstream project documentation
+
+The original README follows unchanged. Product claims, installation links,
+benchmarks, and media in that section describe upstream Hermes.
+
+---
+
 <p align="center">
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>
