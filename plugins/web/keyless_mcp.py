@@ -27,6 +27,7 @@ _KEENABLE_TITLE = "hermes-agent"
 _SESSION_ID = uuid.uuid4().hex
 
 _TIMEOUT_SECONDS = 30
+_EXA_ACQUISITION_LIMIT = 50_000
 
 
 class KeylessMCPError(RuntimeError):
@@ -254,10 +255,16 @@ def exa_search_keyless(query: str, limit: int = 5) -> Dict[str, Any]:
 def exa_extract_keyless(urls: List[str]) -> List[Dict[str, Any]]:
     """Called per-URL; the tool returns one combined text payload."""
     def _fetch(url: str) -> Dict[str, Any]:
-        text = mcp_call(EXA_MCP_URL, "web_fetch_exa", {"urls": [url]})
+        # Exa defaults this endpoint to 3,000 characters.  The display-side
+        # char_limit cannot recover text discarded here, so request the bounded
+        # maximum we can safely acquire and report that acquisition is not a
+        # completeness guarantee (the endpoint gives no completeness signal).
+        text = mcp_call(EXA_MCP_URL, "web_fetch_exa", {"urls": [url], "maxCharacters": _EXA_ACQUISITION_LIMIT})
         # Title: first markdown H1 or ``Title:`` line, whichever comes first.
         titles = (_after(s, "# " if s.startswith("# ") else "Title:") for s in map(str.strip, text.splitlines()) if s.startswith(("# ", "Title:")))
-        return _page(url, next(titles, ""), text)
+        result = _page(url, next(titles, ""), text)
+        result["metadata"].update({"source_provider": "exa", "acquisition_limit": _EXA_ACQUISITION_LIMIT, "completeness": "unknown"})
+        return result
 
     return _per_url(urls, _fetch, "exa", catch=KeylessMCPError, hint=True)
 

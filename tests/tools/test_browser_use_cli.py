@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -65,11 +66,45 @@ def _fake_supervisor_registry(monkeypatch):
 
 
 def _fake_cli(tmp_path, body):
-    """Write an executable fake browser-use CLI and return its path."""
-    script = tmp_path / "browser-use"
-    script.write_text("#!/bin/sh\n" + body, encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IXUSR)
-    return str(script)
+    """Write a platform-native fake browser-use CLI and return its argv."""
+    script = tmp_path / "fake_browser_use_cli.py"
+    script.write_text(body, encoding="utf-8")
+    return [sys.executable, str(script)]
+
+
+def _native_cmd(tmp_path, name, body='@echo off\r\n'):
+    """Write a native command fixture accepted by shutil.which."""
+    if os.name == "nt":
+        path = tmp_path / (name + '.CMD')
+        path.write_text(body, encoding='utf-8', newline='')
+    else:
+        path = tmp_path / name
+        path.write_text('#!/bin/sh\n' + body, encoding='utf-8')
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return path
+
+
+def _fake_uv(tmp_path, *, install=False):
+    """Create a native uv command fixture for install_cli tests."""
+    py = tmp_path / 'fake_uv.py'
+    if install:
+        target_name = 'browser-use.CMD' if os.name == 'nt' else 'browser-use'
+        py.write_text(
+            "import os, pathlib\n"
+            f"target = pathlib.Path(os.environ['UV_TOOL_BIN_DIR']) / {target_name!r}\n"
+            "target.write_text('@echo off\\r\\n' if os.name == 'nt' else '#!/bin/sh\\n', encoding='utf-8')\n"
+            "if os.name != 'nt': target.chmod(target.stat().st_mode | 0o100)\n",
+            encoding='utf-8',
+        )
+    else:
+        py.write_text("import sys\nprint('no network', file=sys.stderr)\nsys.exit(1)\n", encoding='utf-8')
+    cmd = tmp_path / ('uv.CMD' if os.name == 'nt' else 'uv')
+    if os.name == 'nt':
+        cmd.write_text('@echo off\r\n"' + sys.executable + '" "' + str(py) + '" %*\r\n', encoding='utf-8', newline='')
+    else:
+        cmd.write_text('#!/bin/sh\nexec "' + sys.executable + '" "' + str(py) + '" "$@"\n', encoding='utf-8')
+        cmd.chmod(cmd.stat().st_mode | stat.S_IXUSR)
+    return cmd
 
 
 class TestModeDetection:
@@ -214,6 +249,12 @@ class TestSubprocessEnvironment:
 
 
 class TestToolSurfaceSwap:
+    def test_isolated_is_public_optional_schema(self):
+        props = bu_cli.BROWSER_EXEC_SCHEMA["parameters"]["properties"]
+        assert props["isolated"]["type"] == "boolean"
+        assert props["isolated"]["default"] is False
+        assert "isolated" not in bu_cli.BROWSER_EXEC_SCHEMA["parameters"]["required"]
+
     def test_legacy_browser_tools_hidden_in_cli_mode(self, monkeypatch):
         import tools.browser_tool as browser_tool
 
@@ -272,8 +313,8 @@ class TestVaultSupervisorAttach:
         """browser_vault_fill injects secrets only over the supervisor's CDP WebSocket. Without this attach the
         default (Browser Use) backend had no supervisor at all and every fill failed with supervisor_required."""
         monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {"browser": {"backend": "browser-use"}})
-        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho ok\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_cli(tmp_path, 'import sys\nsys.stdin.read()\nprint("ok")\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: cli)
         monkeypatch.setattr("tools.browser_tool_cdp._resolve_cdp_override", lambda url: url)
 
         result = json.loads(bu_cli.browser_exec("print(1)", task_id="t-vault"))
@@ -288,8 +329,8 @@ class TestVaultEgressRedaction:
         from agent import redact
 
         secret = "vault-filled-password-112693"
-        cli = _fake_cli(tmp_path, f'cat > /dev/null\necho "stdout={secret}"\necho "stderr={secret}" >&2\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_cli(tmp_path, f'import sys\nsys.stdin.read()\nprint("stdout={secret}")\nprint("stderr={secret}", file=sys.stderr)\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: cli)
         redact.register_vault_redaction_value(secret)
         try:
             result = json.loads(bu_cli.browser_exec("print(1)"))
@@ -420,8 +461,8 @@ class TestLegacyCloudMigration:
     def test_migrated_config_gets_bu_autospawn(self, tmp_path, monkeypatch):
         monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: self._LEGACY)
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
-        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "autospawn:$BU_AUTOSPAWN"\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_cli(tmp_path, 'import os, sys\nsys.stdin.read()\nprint("autospawn:" + os.environ.get("BU_AUTOSPAWN", ""))\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: cli)
         result = json.loads(bu_cli.browser_exec("print(1)"))
         assert "autospawn:1" in result["output"]
 
@@ -430,8 +471,8 @@ class TestLegacyCloudMigration:
             "hermes_cli.config.read_raw_config",
             lambda: {"browser": {"backend": "browser-use"}},
         )
-        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "autospawn:[$BU_AUTOSPAWN]"\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_cli(tmp_path, 'import os, sys\nsys.stdin.read()\nprint("autospawn:[" + os.environ.get("BU_AUTOSPAWN", "") + "]")\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: cli)
         result = json.loads(bu_cli.browser_exec("print(1)"))
         assert "autospawn:[]" in result["output"]
 
@@ -544,8 +585,8 @@ class TestBackendCdpResolution:
         monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
         monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
         monkeypatch.setattr(bt_session, "_get_session_info", fake_session_info)
-        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "bu:$BU_NAME ws:$BU_CDP_WS"\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_cli(tmp_path, 'import os, sys\nsys.stdin.read()\nprint("bu:%s ws:%s" % (os.environ.get("BU_NAME", ""), os.environ.get("BU_CDP_WS", "")))\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: cli)
         result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
         assert result["success"] is True
         assert seen == ["bu-named-r7k2"]
@@ -646,8 +687,8 @@ class TestOwnTabPreamble:
         else:
             monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
         # fake CLI echoes stdin back so we can inspect what code was sent
-        cli = _fake_cli(tmp_path, "cat\n")
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_cli(tmp_path, 'import sys\nprint(sys.stdin.read(), end="")\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: cli)
         return json.loads(bu_cli.browser_exec("print('payload')", session=session))
 
     def test_named_shared_browser_gets_preamble(self, tmp_path, monkeypatch):
@@ -683,8 +724,8 @@ class TestOwnTabPreamble:
             bt_session, "_get_session_info",
             lambda key: {"cdp_url": "wss://browser.example/cdp/" + key},
         )
-        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "sentinel:${_HERMES_BU_PRIVATE_BROWSER:-unset}"\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_cli(tmp_path, 'import os, sys\nsys.stdin.read()\nprint("sentinel:" + os.environ.get("_HERMES_BU_PRIVATE_BROWSER", "unset"))\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: cli)
         result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
         assert "sentinel:unset" in result["output"]
 
@@ -871,8 +912,8 @@ class TestNativeScreenshots:
 
     def test_vision_model_gets_multimodal_envelope(self, tmp_path, monkeypatch):
         shot = self._shot(tmp_path)
-        cli = _fake_cli(tmp_path, f'cat > /dev/null\necho "{shot}"\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_cli(tmp_path, f"import sys\nsys.stdin.read()\nprint({str(shot)!r})\n")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: cli)
         monkeypatch.setattr(
             "tools.vision_tools._should_use_native_vision_fast_path", lambda: True
         )
@@ -885,12 +926,12 @@ class TestNativeScreenshots:
         kinds = [part["type"] for part in result["content"]]
         assert kinds == ["text", "image_url"]
         assert result["meta"]["screenshot_path"] == shot
-        assert shot in result["text_summary"]
+        assert shot in json.loads(result["text_summary"])["output"]
 
     def test_text_only_model_gets_plain_result_with_path(self, tmp_path, monkeypatch):
         shot = self._shot(tmp_path)
-        cli = _fake_cli(tmp_path, f'cat > /dev/null\necho "{shot}"\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_cli(tmp_path, f"import sys\nsys.stdin.read()\nprint({str(shot)!r})\n")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: cli)
         monkeypatch.setattr(
             "tools.vision_tools._should_use_native_vision_fast_path", lambda: False
         )
@@ -898,8 +939,8 @@ class TestNativeScreenshots:
         assert result["screenshot_path"] == shot
 
     def test_no_screenshot_keeps_string_result(self, tmp_path, monkeypatch):
-        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "no images here"\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_cli(tmp_path, 'import sys\nsys.stdin.read()\nprint("no images here")\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: cli)
         result = json.loads(bu_cli.browser_exec("print(1)"))
         assert "screenshot_path" not in result
 
@@ -998,6 +1039,22 @@ class TestSkillTextDescription:
 
 
 class TestBrowserExec:
+
+    def test_isolated_does_not_call_real_profile(self, monkeypatch):
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-use"])
+        monkeypatch.setattr(bu_cli, "_resolve_real_profile_cdp",
+                            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("real profile")))
+        monkeypatch.setattr(bu_cli, "_resolve_managed_chromium_cdp", lambda *args, **kwargs: None)
+        monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group",
+                            lambda *args, **kwargs: subprocess.CompletedProcess([], 0, "", ""))
+        result = json.loads(bu_cli.browser_exec("print(1)", session="account", isolated=True))
+        assert result["success"] is True
+
+    def test_local_and_isolated_are_rejected(self, monkeypatch):
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
+        result = json.loads(bu_cli.browser_exec("print(1)", local=True, isolated=True))
+        assert "cannot be used together" in result["error"]
+
     def test_missing_cli_returns_install_hint(self, monkeypatch):
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
         result = json.loads(bu_cli.browser_exec("print(page_info())"))
@@ -1008,8 +1065,8 @@ class TestBrowserExec:
         assert "error" in result
 
     def test_code_piped_on_stdin(self, tmp_path, monkeypatch):
-        cli = _fake_cli(tmp_path, 'code=$(cat)\necho "got:$code"\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_cli(tmp_path, 'import sys\nprint("got:" + sys.stdin.read())\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: cli)
         result = json.loads(bu_cli.browser_exec('print("hi")'))
         assert result["success"] is True
         assert result["exit_code"] == 0
@@ -1017,30 +1074,30 @@ class TestBrowserExec:
         assert "session" not in result
 
     def test_session_sets_bu_name(self, tmp_path, monkeypatch):
-        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "bu:$BU_NAME"\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_cli(tmp_path, 'import os, sys\nsys.stdin.read()\nprint("bu:" + os.environ.get("BU_NAME", ""))\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: cli)
         result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
         assert "bu:r7k2" in result["output"]
         assert result["session"] == "r7k2"
 
     def test_invalid_session_name_rejected(self, monkeypatch, tmp_path):
-        cli = _fake_cli(tmp_path, "cat > /dev/null\n")
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_cli(tmp_path, 'import sys\nsys.stdin.read()\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: cli)
         result = json.loads(bu_cli.browser_exec("print(1)", session="bad name!"))
         assert "error" in result
         assert "session" in result["error"].lower()
 
     def test_nonzero_exit_reports_failure_and_stderr(self, tmp_path, monkeypatch):
-        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "boom" >&2\nexit 3\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_cli(tmp_path, 'import sys\nsys.stdin.read()\nprint("boom", file=sys.stderr)\nsys.exit(3)\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: cli)
         result = json.loads(bu_cli.browser_exec("print(1)"))
         assert result["success"] is False
         assert result["exit_code"] == 3
         assert "boom" in result["stderr"]
 
     def test_timeout_returns_actionable_error(self, tmp_path, monkeypatch):
-        cli = _fake_cli(tmp_path, "cat > /dev/null\nsleep 30\n")
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_cli(tmp_path, 'import sys,time\nsys.stdin.read()\ntime.sleep(30)\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: cli)
         monkeypatch.setattr(bu_cli, "_MIN_TIMEOUT_S", 1)
         result = json.loads(bu_cli.browser_exec("print(1)", timeout_s=1))
         assert "timed out" in result["error"]
@@ -1055,23 +1112,21 @@ class TestFindCliManagedBin:
         """Pin HOME so the ~/.local/bin probe can't leak the host's real
         user-level installs into these real-PATH-probing tests."""
         monkeypatch.setenv("HOME", str(tmp_path / "userhome"))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path / "userhome"))
+        monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
 
     def test_managed_bin_browser_use_found(self, tmp_path, monkeypatch):
         bin_dir = tmp_path / "home" / "bin"
         bin_dir.mkdir(parents=True)
-        bu = bin_dir / "browser-use"
-        bu.write_text("#!/bin/sh\n", encoding="utf-8")
-        bu.chmod(bu.stat().st_mode | stat.S_IXUSR)
+        bu = _native_cmd(bin_dir, "browser-use")
         assert bu_cli._find_cli_unpatched() == [str(bu)]
 
     def test_managed_bin_uvx_fallback(self, tmp_path, monkeypatch):
         bin_dir = tmp_path / "home" / "bin"
         bin_dir.mkdir(parents=True)
-        uvx = bin_dir / "uvx"
-        uvx.write_text("#!/bin/sh\n", encoding="utf-8")
-        uvx.chmod(uvx.stat().st_mode | stat.S_IXUSR)
+        uvx = _native_cmd(bin_dir, "uvx")
         assert bu_cli._find_cli_unpatched() == [str(uvx), "browser-use"]
 
     def test_nothing_found(self, tmp_path, monkeypatch):
@@ -1081,11 +1136,9 @@ class TestFindCliManagedBin:
         """#83788: Desktop/TUI workers spawn with a minimal PATH that omits
         ~/.local/bin, where `uv tool install browser-use` links the binary
         by default — _find_cli must probe it explicitly."""
-        cli_dir = tmp_path / "userhome" / ".local" / "bin"
+        cli_dir = (tmp_path / "appdata" / "uv" / "bin" if os.name == "nt" else tmp_path / "userhome" / ".local" / "bin")
         cli_dir.mkdir(parents=True)
-        cli = cli_dir / "browser-use"
-        cli.write_text("#!/bin/sh\n", encoding="utf-8")
-        cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+        cli = _native_cmd(cli_dir, "browser-use")
         assert bu_cli._find_cli_unpatched() == [str(cli)]
 
     def test_managed_bin_precedes_user_local_bin(self, tmp_path, monkeypatch):
@@ -1093,39 +1146,29 @@ class TestFindCliManagedBin:
         install — every backend selection provisions/updates the managed
         copy, so resolution must land on the binary we control (no version
         drift from stray `uv tool install` runs)."""
-        user_dir = tmp_path / "userhome" / ".local" / "bin"
+        user_dir = (tmp_path / "appdata" / "uv" / "bin" if os.name == "nt" else tmp_path / "userhome" / ".local" / "bin")
         user_dir.mkdir(parents=True)
-        user_cli = user_dir / "browser-use"
-        user_cli.write_text("#!/bin/sh\n", encoding="utf-8")
-        user_cli.chmod(user_cli.stat().st_mode | stat.S_IXUSR)
+        user_cli = _native_cmd(user_dir, "browser-use")
         managed_dir = tmp_path / "home" / "bin"
         managed_dir.mkdir(parents=True)
-        managed_cli = managed_dir / "browser-use"
-        managed_cli.write_text("#!/bin/sh\n", encoding="utf-8")
-        managed_cli.chmod(managed_cli.stat().st_mode | stat.S_IXUSR)
+        managed_cli = _native_cmd(managed_dir, "browser-use")
         assert bu_cli._find_cli_unpatched() == [str(managed_cli)]
 
     def test_managed_bin_precedes_path(self, tmp_path, monkeypatch):
         """MANAGED-FIRST: the managed copy also wins over one on PATH."""
         path_dir = tmp_path / "onpath"
         path_dir.mkdir()
-        path_cli = path_dir / "browser-use"
-        path_cli.write_text("#!/bin/sh\n", encoding="utf-8")
-        path_cli.chmod(path_cli.stat().st_mode | stat.S_IXUSR)
+        path_cli = _native_cmd(path_dir, "browser-use")
         monkeypatch.setenv("PATH", str(path_dir))
         managed_dir = tmp_path / "home" / "bin"
         managed_dir.mkdir(parents=True)
-        managed_cli = managed_dir / "browser-use"
-        managed_cli.write_text("#!/bin/sh\n", encoding="utf-8")
-        managed_cli.chmod(managed_cli.stat().st_mode | stat.S_IXUSR)
+        managed_cli = _native_cmd(managed_dir, "browser-use")
         assert bu_cli._find_cli_unpatched() == [str(managed_cli)]
 
     def test_user_local_bin_uvx_fallback(self, tmp_path, monkeypatch):
-        cli_dir = tmp_path / "userhome" / ".local" / "bin"
+        cli_dir = (tmp_path / "appdata" / "uv" / "bin" if os.name == "nt" else tmp_path / "userhome" / ".local" / "bin")
         cli_dir.mkdir(parents=True)
-        uvx = cli_dir / "uvx"
-        uvx.write_text("#!/bin/sh\n", encoding="utf-8")
-        uvx.chmod(uvx.stat().st_mode | stat.S_IXUSR)
+        uvx = _native_cmd(cli_dir, "uvx")
         assert bu_cli._find_cli_unpatched() == [str(uvx), "browser-use"]
 
 
@@ -1134,9 +1177,9 @@ class TestInstallCli:
         """MANAGED-FIRST: a browser-use on PATH is a user-level side install
         and must NOT satisfy install_cli() — only the managed copy does,
         otherwise resolution stays pinned to a binary Hermes can't update."""
-        cli = _fake_cli(tmp_path, "")
+        cli = _native_cmd(tmp_path, "browser-use")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-        monkeypatch.setattr(bu_cli.shutil, "which", lambda name, path=None: cli if name == "browser-use" and path is None else None)
+        monkeypatch.setattr(bu_cli.shutil, "which", lambda name, path=None: str(cli) if name == "browser-use" and path is None else None)
         import sys as _sys
         import types as _types
         fake = _types.ModuleType("hermes_cli.managed_uv")
@@ -1151,9 +1194,7 @@ class TestInstallCli:
     def test_already_installed_in_managed_bin(self, tmp_path, monkeypatch):
         bin_dir = tmp_path / "home" / "bin"
         bin_dir.mkdir(parents=True)
-        cli = bin_dir / "browser-use"
-        cli.write_text("#!/bin/sh\n", encoding="utf-8")
-        cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+        cli = _native_cmd(bin_dir, "browser-use")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
         ok, msg = bu_cli.install_cli()
@@ -1181,16 +1222,7 @@ class TestInstallCli:
         # install_cli verifies via _find_cli(), which the tests/tools conftest
         # pins to None — restore the real resolver for this test.
         monkeypatch.setattr(bu_cli, "_find_cli", bu_cli._find_cli_unpatched)
-        # fake uv: `uv tool install browser-use` drops a binary into UV_TOOL_BIN_DIR.
-        # Absolute /bin/chmod: PATH is emptied above, so bare chmod won't resolve.
-        uv = tmp_path / "uv"
-        uv.write_text(
-            "#!/bin/sh\n"
-            'target="$UV_TOOL_BIN_DIR/browser-use"\n'
-            'echo "#!/bin/sh" > "$target"\n'
-            '/bin/chmod +x "$target"\n'
-        , encoding="utf-8")
-        uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
+        uv = _fake_uv(tmp_path, install=True)
         import sys as _sys
         import types as _types
         fake = _types.ModuleType("hermes_cli.managed_uv")
@@ -1198,15 +1230,13 @@ class TestInstallCli:
         monkeypatch.setitem(_sys.modules, "hermes_cli.managed_uv", fake)
         ok, msg = bu_cli.install_cli()
         assert ok is True, msg
-        assert (bin_dir / "browser-use").exists()
+        assert (bin_dir / ("browser-use.CMD" if os.name == "nt" else "browser-use")).exists()
 
     def test_failed_install_surfaces_stderr_tail(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-        uv = tmp_path / "uv"
-        uv.write_text('#!/bin/sh\necho "no network" >&2\nexit 1\n', encoding="utf-8")
-        uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
+        uv = _fake_uv(tmp_path)
         import sys as _sys
         import types as _types
         fake = _types.ModuleType("hermes_cli.managed_uv")
@@ -1233,7 +1263,13 @@ class TestDefaultDowngradeNotice:
         self._isolate(tmp_path, monkeypatch)
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
         assert bu_cli.default_downgrade_notice() is not None
+        # Anchor to the filesystem timestamp, not two different wall-clock resolutions.
+        stamp = tmp_path / "home" / "cache" / ".browser_use_default_notice"
+        written_at = stamp.stat().st_mtime
+        monkeypatch.setattr(bu_cli.time, "time", lambda: written_at + 1)
         assert bu_cli.default_downgrade_notice() is None
+        monkeypatch.setattr(bu_cli.time, "time", lambda: written_at + 24 * 3600 + 1)
+        assert bu_cli.default_downgrade_notice() is not None
 
     def test_no_notice_when_cli_runnable(self, tmp_path, monkeypatch):
         self._isolate(tmp_path, monkeypatch)
@@ -1347,8 +1383,8 @@ class TestLightpandaPreamble:
         monkeypatch.setattr(
             bt_session, "_get_session_info", lambda key: {"cdp_url": "http://127.0.0.1:43111"}
         )
-        cli = _fake_cli(tmp_path, "cat\n")
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_cli(tmp_path, 'import sys\nprint(sys.stdin.read(), end="")\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: cli)
         result = json.loads(bu_cli.browser_exec("print('payload')", session="r7k2"))
         assert result["success"] is True
         assert "_hermes_ensure_own_tab" not in result["output"]
@@ -1475,13 +1511,8 @@ class TestTimeoutProcessGroupKill:
         before the group kill)."""
         monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
         pid_file = tmp_path / "grandchild.pid"
-        cli = _fake_cli(tmp_path, (
-            "cat > /dev/null\n"
-            "sleep 60 &\n"
-            "echo $! > \"" + str(pid_file) + "\"\n"
-            "sleep 60\n"
-        ))
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_cli(tmp_path, "import sys, time, subprocess\nfrom pathlib import Path\nsys.stdin.read()\nchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n" + f"Path({str(pid_file)!r}).write_text(str(child.pid))\n" + "time.sleep(60)\n")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: cli)
 
         start = time.time()
         result = json.loads(bu_cli.browser_exec("print(1)", timeout_s=bu_cli._MIN_TIMEOUT_S))

@@ -193,6 +193,10 @@ def _save_index(index: dict) -> None:
 def _url_digest(url: str, format: Optional[str], provider: str = "") -> str:
     # format AND provider are part of the key: html != markdown, and one backend's rendering is not another's.
     raw = f"{url}\n{format or 'markdown'}\n{provider or ''}"
+    if provider == "exa":
+        # Old keyless entries can be 3,000-character excerpts without provenance.
+        # A new namespace refreshes them without deleting retained cache files.
+        raw += "\nacquisition-v2"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -259,7 +263,7 @@ def _cacheable(url: str) -> bool:
 
 
 def extract_cache_get(url: str, format: Optional[str] = None, provider: str = "") -> Optional[dict]:
-    """Return {'url','title','content'} for a fresh cached page, else None."""
+    """Return the normalized page, including provenance metadata, for a fresh hit."""
     if not _cacheable(url):
         return None
     with _index_lock:
@@ -275,11 +279,14 @@ def extract_cache_get(url: str, format: Optional[str] = None, provider: str = ""
     except Exception:  # noqa: BLE001 — evicted/pruned file == miss (or no cache dir)
         return None
     logger.info("web_extract cache hit: %s", url)
-    return {"url": url, "title": entry.get("title", ""), "content": content, "error": None, "cached": True}
+    result = {"url": url, "title": entry.get("title", ""), "content": content, "error": None, "cached": True}
+    if isinstance(entry.get("metadata"), dict):
+        result["metadata"] = entry["metadata"]
+    return result
 
 
 def extract_cache_put(
-    url: str, content: str, title: str = "", format: Optional[str] = None, provider: str = ""
+    url: str, content: str, title: str = "", format: Optional[str] = None, provider: str = "", metadata: Optional[dict] = None
 ) -> None:
     """Store one successful extraction's full clean text for TTL reuse; pages over the truncate-store
     ceiling are not cached (serving a capped copy back as if whole would silently lose the tail)."""
@@ -297,6 +304,8 @@ def extract_cache_put(
             index[_url_digest(url, format, provider)] = {
                 "url": url, "file": str(file_path), "title": title or "", "fetched_at": time.time(),
             }
+            if isinstance(metadata, dict):
+                index[_url_digest(url, format, provider)]["metadata"] = metadata
             _save_index(index)
     except Exception as exc:  # noqa: BLE001 — cache writes are best-effort
         logger.debug("Failed to cache web extract for %s: %s", url, exc)

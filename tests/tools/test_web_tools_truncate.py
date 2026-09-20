@@ -13,6 +13,7 @@ import pytest
 
 import tools.web_tools as wt
 from tools import web_tools_truncate
+from plugins.web import keyless_mcp
 
 
 class TestImageConversion:
@@ -98,6 +99,56 @@ class TestEndToEnd:
         # No LLM was involved: para 0 (head) and the last para (tail) are verbatim.
         assert "para 0 " in content
         assert "para 2999 " in content
+
+
+def test_exa_keyless_requests_bounded_acquisition_and_marks_completeness_unknown(monkeypatch):
+    calls = []
+
+    def fake_mcp_call(url, tool, arguments):
+        calls.append((url, tool, arguments))
+        return "# Title\n\nbody"
+
+    monkeypatch.setattr(keyless_mcp, "mcp_call", fake_mcp_call)
+    result = keyless_mcp.exa_extract_keyless(["https://example.com/page"])
+
+    assert calls[0][2] == {"urls": ["https://example.com/page"], "maxCharacters": 50_000}
+    metadata = result[0]["metadata"]
+    assert metadata["source_provider"] == "exa"
+    assert metadata["acquisition_limit"] == 50_000
+    assert metadata["completeness"] == "unknown"
+
+
+def test_truncation_preserves_extraction_provenance_and_marks_output_truncated(monkeypatch):
+    result = {
+        "url": "https://example.com/page",
+        "title": "Page",
+        "content": "x" * 4000,
+        "raw_content": "x" * 4000,
+        "metadata": {
+            "source_provider": "exa",
+            "acquisition_limit": 50_000,
+            "completeness": "unknown",
+        },
+    }
+    debug = {"pages_truncated": 0, "truncation_metrics": []}
+    monkeypatch.setattr(web_tools_truncate, "_store_full_text", lambda *args: None)
+
+    web_tools_truncate._truncate_results([result], 2000, debug)
+
+    assert result["metadata"]["completeness"] == "truncated"
+    assert result["metadata"]["source_provider"] == "exa"
+    assert result["metadata"]["acquisition_limit"] == 50_000
+
+
+@pytest.mark.parametrize("error,expected", [(None, "unknown"), ("403 forbidden", "unavailable")])
+def test_unverified_provider_or_legacy_cache_never_implies_complete(error, expected):
+    result = {"url": "https://example.com/page", "content": "short excerpt", "error": error}
+    debug = {"pages_truncated": 0, "truncation_metrics": []}
+    web_tools_truncate._truncate_results([result], 5000, debug)
+    trimmed = web_tools_truncate._trim_results([result])[0]
+    assert trimmed["metadata"]["completeness"] == expected
+    assert trimmed["metadata"]["source_provider"] == "unknown"
+    assert trimmed["metadata"]["sourceURL"] == result["url"]
 
 
 def _make_awaitable(value):

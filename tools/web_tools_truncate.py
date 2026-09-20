@@ -115,7 +115,7 @@ def _truncate_with_footer(content: str, url: str, char_limit: int) -> tuple[str,
         footer_lines += [
             f"Full text saved to: {stored_path}",
             f'To read the omitted middle: read_file path="{stored_path}" '
-            f"offset={middle_start_line} limit=200  (the file is the complete page; "
+            f"offset={middle_start_line} limit=200  (the file is the complete acquired response; "
             f"raise/lower offset to page through it).",
         ]
     else:
@@ -155,14 +155,24 @@ def _truncate_results(results: List[dict], char_limit: int, debug_call_data: dic
     per-page truncation metrics go into ``debug_call_data``."""
     for result in results:
         url = result.get("url", "")
+        metadata = result.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            result["metadata"] = metadata
+        metadata.setdefault("sourceURL", url)
+        metadata.setdefault("source_provider", "unknown")
+        metadata.setdefault("completeness", "unknown")
         raw_content = result.get("raw_content", "") or result.get("content", "")
         if result.get("error") or not raw_content:
+            metadata["completeness"] = "unavailable"
             continue
         binary_kind = _binary_payload_kind(raw_content)
         if binary_kind:
             # A backend that fetched a raw file (SQLite, archive, executable) hands back its bytes as
             # "text"; 800K chars of that would enter context. Name the type and point at the tool that reads it.
             result["content"] = ""
+            # No page text reaches the model, so the fetch is unavailable rather than partial or whole.
+            metadata["completeness"] = "unavailable"
             result["error"] = (
                 f"URL returned binary content ({binary_kind}), not a page. Download it with the terminal "
                 "(curl -L -o) and use read_file (SQLite/Office/PDF auto-extract) or terminal utilities on the file.")
@@ -172,6 +182,8 @@ def _truncate_results(results: List[dict], char_limit: int, debug_call_data: dic
         model_text, truncated = _truncate_with_footer(clean, url, char_limit)
         result["content"] = model_text
         if truncated:
+            if isinstance(result.get("metadata"), dict):
+                result["metadata"]["completeness"] = "truncated"
             debug_call_data["pages_truncated"] += 1
             debug_call_data["truncation_metrics"].append(
                 {"url": url, "original_size": len(clean), "sent_size": len(model_text)}
@@ -187,6 +199,7 @@ def _trim_results(results: List[dict]) -> List[dict]:
         {
             "url": r.get("url", ""), "title": r.get("title", ""), "content": r.get("content", ""),
             "error": r.get("error"),
+            **({"metadata": r["metadata"]} if isinstance(r.get("metadata"), dict) else {}),
             **({"blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {}),
         }
         for r in results

@@ -156,10 +156,37 @@ def test_extract_cache_roundtrip(_isolated_cache):
     assert hit["cached"] is True
 
 
+def test_extract_cache_roundtrip_preserves_provenance_metadata(_isolated_cache):
+    metadata = {"source_provider": "exa", "acquisition_limit": 50_000, "completeness": "unknown"}
+    extract_cache_put("https://example.com/a", "hello world", metadata=metadata)
+
+    hit = extract_cache_get("https://example.com/a")
+
+    assert hit is not None
+    assert hit["metadata"] == metadata
+
+
 def test_extract_cache_expired_entry_is_miss(monkeypatch, _isolated_cache):
     extract_cache_put("https://e.com", "x")
     monkeypatch.setattr(wrc, "ttl_seconds", lambda: 0.0)
     assert extract_cache_get("https://e.com") is None
+
+
+def test_legacy_exa_excerpt_is_not_reused(monkeypatch, _isolated_cache):
+    import hashlib
+    def legacy_digest(url, format, provider=""):
+        raw = f"{url}\n{format or 'markdown'}\n{provider or ''}"
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+    url = "https://example.com/long"
+    with monkeypatch.context() as old:
+        old.setattr(wrc, "_url_digest", legacy_digest)
+        extract_cache_put(url, "old excerpt", provider="exa")
+    assert extract_cache_get(url, provider="exa") is None
+    metadata = {"source_provider": "exa", "acquisition_limit": 50_000, "completeness": "unknown"}
+    extract_cache_put(url, "new acquisition", provider="exa", metadata=metadata)
+    hit = extract_cache_get(url, provider="exa")
+    assert hit["content"] == "new acquisition"
+    assert hit["metadata"] == metadata
 
 
 def test_extract_cache_format_participates_in_key(_isolated_cache):

@@ -5,6 +5,7 @@ instead of default browser tools
 """
 
 import contextlib
+import hashlib
 import importlib
 import json
 import logging
@@ -373,6 +374,13 @@ def _backend_cache_key(task_id: Optional[str], session_name: str = "") -> str:
     return f"{key}@{tag}" if tag else key
 
 
+def _isolated_route_session(session: str) -> str:
+    """Reserved, non-truncating daemon namespace for the isolated route."""
+    from hermes_constants import hermes_home_key
+    identity = f"{hermes_home_key()}:{session}"
+    return "hermes-isolated-" + hashlib.sha256(identity.encode()).hexdigest()[:32]
+
+
 def _resolve_lightpanda_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:
     """Point the harness at a Hermes-spawned ``lightpanda serve`` (``browser.engine: lightpanda`` and
     nothing of higher precedence claimed the session). Each cache key gets its own process via the
@@ -396,7 +404,8 @@ def _resolve_lightpanda_cdp(env: dict, task_id: Optional[str], session_name: str
     return err
 
 
-def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:
+def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_name: str = "",
+                                  force_local: bool = False) -> Optional[str]:
     """Point the harness at Hermes' packaged Chromium, launched through agent-browser for this cache key —
     the same browser the built-in tools drive. Left alone, the harness discovers the user's INSTALLED
     Chrome on its default profile, which needs the chrome://inspect toggle + an Allow popup per run and
@@ -409,8 +418,12 @@ def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_nam
         from tools.browser_tool import _get_open_command_timeout
     except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
         logger.debug("managed chromium resolution unavailable: %s", e)
-        return None
-    res = _run_browser_command(_backend_cache_key(task_id, session_name), "get", ["cdp-url"],
+        return "Isolated browser resolver unavailable." if force_local else None
+    key = _backend_cache_key(task_id, session_name)
+    if force_local:
+        # Existing sidecar routing bypasses both account profiles and CDP/cloud overrides.
+        key += "::local"
+    res = _run_browser_command(key, "get", ["cdp-url"],
                                timeout=_get_open_command_timeout(first_open=True))
     cdp = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""
     if not cdp:
@@ -527,11 +540,21 @@ def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
         logger.debug("browser_exec: CDP supervisor attach failed (non-fatal): %s", exc)
 
 
-def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool) -> Optional[str]:
+def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool,
+                   isolated: bool = False) -> Optional[str]:
     """Resolve where the harness connects; returns an error string or None. Real-profile consent runs
     BEFORE provider resolution so a hit short-circuits the cloud path via the BU_CDP_* env contract. Named
     sessions compose with the backend: BU_NAME namespaces the harness daemon (IPC socket, log, pid) and on
     provider backends additionally keys its own cloud browser."""
+    if local and isolated:
+        return "local=true and isolated=true cannot be used together."
+    if isolated:
+        route_session = _isolated_route_session(session)
+        env["BU_NAME"] = route_session
+        env.pop("BU_CDP_WS", None)
+        env.pop("BU_CDP_URL", None)
+        return _resolve_managed_chromium_cdp(env, task_id, session_name=route_session,
+                                              force_local=True)
     rp_err = _resolve_real_profile_cdp(env, force_local=local)
     if rp_err:
         return rp_err
@@ -604,7 +627,8 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
 
 
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
-                 task_id: Optional[str] = None, local: bool = False):
+                 task_id: Optional[str] = None, local: bool = False,
+                 isolated: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
     from agent.redact import redact_sensitive_text
     from tools.registry import tool_error, tool_result
@@ -614,6 +638,10 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     blocked = _blocked_url_in_code(code)
     if blocked:
         return tool_error(blocked)
+    if local and isolated:
+        return tool_error("local=true and isolated=true cannot be used together.")
+    if session.startswith("hermes-isolated-"):
+        return tool_error("Session names starting with hermes-isolated- are reserved for isolated routing.")
 
     cmd = _find_cli()
     if not cmd:
@@ -627,7 +655,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                               "dashes, or underscores (e.g. 'r7k2').")
         env["BU_NAME"] = session
-    route_err = _route_backend(env, session, task_id, bool(local))
+    route_err = _route_backend(env, session, task_id, bool(local), bool(isolated))
     if route_err:
         return tool_error(route_err)
     _attach_vault_supervisor(env, task_id)
@@ -774,6 +802,8 @@ BROWSER_EXEC_SCHEMA = {
         "properties": {
             "code": {"type": "string", "description": "Python code to execute using the pre-imported browser helpers. Use print(...) for any data you need back."},
             "session": {"type": "string", "description": "Named isolated browser session — its own daemon and (on cloud backends) own browser, so concurrent tasks don't share tabs. Reuse the same name on every related call; omit for the shared default session."},
+            "isolated": {"type": "boolean", "default": False,
+                         "description": "Force a clean local browser for this call, without the user's account/profile. Cannot be combined with local=true. Default false."},
             "timeout_s": {"type": "integer", "default": _DEFAULT_TIMEOUT_S,
                           "description": f"Max seconds to wait for the code to finish (default {_DEFAULT_TIMEOUT_S}, max {_MAX_TIMEOUT_S})."},
         },
@@ -795,6 +825,7 @@ registry.register(
         code=args.get("code", ""), session=args.get("session", "") or "",
         timeout_s=args.get("timeout_s", _DEFAULT_TIMEOUT_S), task_id=kw.get("task_id"),
         local=bool(args.get("local", False)),
+        isolated=bool(args.get("isolated", False)),
     ),
     check_fn=is_browser_use_cli_mode,
     dynamic_schema_overrides=_dynamic_schema_overrides,

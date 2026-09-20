@@ -49,6 +49,28 @@ def _real_profile_daemon_env() -> dict:
     return env
 
 
+def _run_agent_browser_command(argv, *, env, timeout):
+    """Capture Windows daemon output without waiting for inherited pipes to close."""
+    if sys.platform != "win32":
+        return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=timeout, env=env, stdin=subprocess.DEVNULL)
+    socket_dir = env["AGENT_BROWSER_SOCKET_DIR"]
+    tag = f"real-profile-{os.getpid()}-{time.monotonic_ns()}"
+    paths = [os.path.join(socket_dir, f"_{slot}_{tag}") for slot in ("stdout", "stderr")]
+    try:
+        proc = _session._popen_agent_browser(argv, env, socket_dir, tag)
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+            raise
+        stdout, stderr = _session._read_command_output_files(*paths)
+        return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+    finally:
+        _session._unlink_command_output_files(*paths)
+
+
 def _agent_browser_session_cmd(session_name: str, *cmd: str, log_label: str) -> Optional[subprocess.CompletedProcess]:
     """Run ``agent-browser --session <name> <cmd...>``; None when agent-browser is missing or the run fails."""
     _bt = _origin()
@@ -57,9 +79,9 @@ def _agent_browser_session_cmd(session_name: str, *cmd: str, log_label: str) -> 
     except FileNotFoundError:
         return None
     try:
-        return subprocess.run([*_session._agent_browser_argv(browser_cmd), "--session", session_name, *cmd],
-                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
-                              env=_real_profile_daemon_env(), stdin=subprocess.DEVNULL)
+        return _run_agent_browser_command(
+            [*_session._agent_browser_argv(browser_cmd), "--session", session_name, *cmd],
+            timeout=15, env=_real_profile_daemon_env())
     except (subprocess.SubprocessError, OSError) as e:
         _bt.logger.debug("real-profile %s failed: %s", log_label, e)
         return None
@@ -202,9 +224,8 @@ def _attach_agent_browser_to_real_profile(port: int, copy_dir: str) -> Tuple[Opt
     argv = [*_session._agent_browser_argv(browser_cmd), "--session", _bt._REAL_PROFILE_SESSION,
             "--cdp", str(port), "open", "about:blank"]
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=_bt._get_open_command_timeout(first_open=True), env=_real_profile_daemon_env(),
-                              stdin=subprocess.DEVNULL)
+        proc = _run_agent_browser_command(
+            argv, timeout=_bt._get_open_command_timeout(first_open=True), env=_real_profile_daemon_env())
     except subprocess.TimeoutExpired:
         return None, _RP + "the real-profile browser took too long to start. Retry, or turn the toggle off."
     except (subprocess.SubprocessError, OSError) as e:

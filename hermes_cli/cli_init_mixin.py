@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import queue
 import threading
 from datetime import datetime
@@ -212,11 +213,14 @@ class CLIInitMixin:
         self.disabled_toolsets = parse_config_string_list(CLI_CONFIG["agent"].get("disabled_toolsets"))
 
         if toolsets and "all" not in toolsets and "*" not in toolsets:
+            # Validation must not read a partially populated plugin registry.
+            from hermes_cli.plugins import discover_plugins
+            discover_plugins()  # joins any in-flight background discovery
             # MCP server names only resolve after discover_mcp_tools runs; skip them here.
             mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
             invalid = [t for t in toolsets if not validate_toolset(t) and t not in mcp_names]
             if invalid:
-                self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
+                print(f"Warning: Unknown toolsets: {', '.join(invalid)}", file=sys.stderr)
 
     def _init_checkpoints_and_rules(self, checkpoints, pass_session_id, ignore_rules):
         from cli import CLI_CONFIG

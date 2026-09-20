@@ -192,7 +192,10 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
         url = next((u for u in (fetched.get("url"), source) if u in requested), None)
         _content = fetched.get("raw_content", "") or fetched.get("content", "")
         if url and _content and not fetched.get("error"):
-            extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)
+            extract_cache_put(
+                url, _content, fetched.get("title", ""), format=format, provider=provider.name,
+                metadata=fetched.get("metadata") if isinstance(fetched.get("metadata"), dict) else None,
+            )
     return results
 
 
