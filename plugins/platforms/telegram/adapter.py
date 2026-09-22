@@ -6325,7 +6325,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, _redact_telegram_error_text(e))
 
     def _effective_update_message(self, update: Update) -> Optional[Message]:
-        """Message-like payload for normal messages and channel posts (``update.channel_post``)."""
+        """Message-like payload for normal messages and channel posts (``update.channel_post``).
+
+        Telegram exposes ``business_message`` through PTB's ``effective_message`` too.  Until the
+        dedicated Business routing path handles those updates, admitting one here treats the owner's
+        outgoing copy as a second ordinary DM (often addressed to the bot's own chat id), starts a
+        duplicate agent turn, and then fails when that turn replies to the bot itself.
+        """
+        if getattr(update, "business_message", None) is not None:
+            return None
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
     def _log_blocked_user(self, msg, *, level=logging.WARNING, what: str = "unauthorized user") -> None:
