@@ -370,6 +370,28 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         from tools.environments.local import _bash_safe_path
         return "'" + _bash_safe_path(arg).replace("'", "'\"'\"'") + "'"
 
+    @staticmethod
+    def _escape_shell_text_arg(arg: str) -> str:
+        """Single-quote non-path text without Windows path normalization.
+
+        Regexes and globs use backslashes as syntax. Sending them through
+        ``_escape_shell_arg`` rewrites those backslashes to slashes on Windows,
+        turning a valid escaped regex into a different (often invalid) pattern.
+        """
+        return "'" + arg.replace("'", "'\"'\"'") + "'"
+
+    def _escape_native_tool_text_arg(self, arg: str) -> str:
+        """Quote syntax-bearing text passed from Git Bash to a native Windows tool.
+
+        MSYS consumes one backslash layer while constructing a native process's
+        command line. Double it only for the local Windows lane; POSIX and remote
+        shells receive the text unchanged.
+        """
+        from tools.environments.local import LocalEnvironment, _IS_WINDOWS
+        if _IS_WINDOWS and isinstance(self.env, LocalEnvironment):
+            arg = arg.replace("\\", "\\\\")
+        return self._escape_shell_text_arg(arg)
+
     def _escape_native_tool_arg(self, arg: str) -> str:
         """Quote a path for a NATIVE Windows binary (rg, node, git ...): those don't
         understand the MSYS ``/c/...`` form and Hermes disables MSYS argument

@@ -111,6 +111,46 @@ class TestSearchContentNewlineWarning:
         assert res.warning is None
 
 
+def test_invalid_regex_is_retried_as_literal_text(tmp_path):
+    (tmp_path / "session.py").write_text("db = SessionDB(\n")
+
+    res = _ops(tmp_path).search("SessionDB(", path=str(tmp_path), target="content")
+
+    assert res.error is None
+    assert len(res.matches) == 1
+    assert "searched it as literal text" in (res.warning or "")
+
+
+def test_invalid_regex_literal_retry_preserves_alternatives(tmp_path):
+    (tmp_path / "routes.py").write_text(
+        'route = "/sessions/{session_id}"\nset_archived(session_id)\n'
+    )
+
+    res = _ops(tmp_path).search(
+        "sessions/{session_id}|archived=True|set_archived|archive_session",
+        path=str(tmp_path),
+        target="content",
+    )
+
+    assert res.error is None
+    assert len(res.matches) == 2
+    assert "each | separated alternative" in (res.warning or "")
+
+
+@pytest.mark.windows_only
+def test_escaped_regex_metacharacters_survive_windows_transport(tmp_path):
+    if not shutil.which("rg"):
+        pytest.skip("ripgrep is required for the native Windows search path")
+    (tmp_path / "route.py").write_text('route = "/sessions/{session_id}"\n')
+
+    res = _ops(tmp_path).search(
+        r"sessions/\{session_id\}", path=str(tmp_path), target="content"
+    )
+
+    assert res.error is None
+    assert len(res.matches) == 1
+
+
 class TestSplitToolDiagnostics:
     """Unit coverage for the shape-based diagnostic/payload splitter."""
 
