@@ -35,6 +35,14 @@ def test_oneshot_hides_skill_manage_and_skill_authoring_coaching(oneshot, intera
     assert "skill_manage" in interactive_prompt and "offer to save as a skill" in interactive_prompt
 
 
+def test_interactive_skill_index_requires_material_contribution(interactive_prompt):
+    """A listed skill is discoverable without making partial overlap a command to load it."""
+    assert "demo-skill" in interactive_prompt
+    assert "materially improves the requested outcome" in interactive_prompt
+    assert "hypothetical later workflow is not enough" in interactive_prompt
+    assert "even partially relevant" not in interactive_prompt
+
+
 def _skills_dir(tmp_path):
     d = tmp_path / "skills" / "misc" / "demo-skill"
     d.mkdir(parents=True, exist_ok=True)
