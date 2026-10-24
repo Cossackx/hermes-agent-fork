@@ -3,6 +3,7 @@ import { normalizeMathDelimiters } from '@assistant-ui/react-streamdown'
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
 import { clampHtmlNestingDepth } from '@/lib/markdown-html-depth'
 import { mediaKind, mediaMarkdownHref } from '@/lib/media'
+import { rewriteObsidianMarkdownLinks } from '@/lib/obsidian-links'
 import { previewMarkdownHref } from '@/lib/preview-targets'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 import { linkifySessionRefs } from '@/lib/session-refs'
@@ -581,7 +582,7 @@ function rewriteProseSegment(segment: string, sourceListIds: Set<string>): strin
       autoLinkRawUrls(
         routeFileLinksToPreview(
           escapeUnknownHtmlLikeTags(
-            segment
+            rewriteObsidianMarkdownLinks(segment)
               .replace(/`{3,}/g, '')
               .replace(CITATION_TRANSPORT_MARKER_RE, '')
               .replace(CITATION_MARKER_RE, marker => {

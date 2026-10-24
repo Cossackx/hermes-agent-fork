@@ -21,7 +21,7 @@ import { useMediaImage } from '@/hooks/use-media-image'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
-import { obsidianTargetFromMarkdownHref, rewriteObsidianMarkdownLinks } from '@/lib/obsidian-links'
+import { obsidianTargetFromMarkdownHref } from '@/lib/obsidian-links'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
@@ -106,7 +106,7 @@ const REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkTranscript
 // identity is stable across renders.
 function preprocessWithTailRepair(text: string): string {
   try {
-    return tailBoundedRemend(rewriteObsidianMarkdownLinks(preprocessMarkdown(text)))
+    return tailBoundedRemend(preprocessMarkdown(text))
   } catch {
     return text
   }

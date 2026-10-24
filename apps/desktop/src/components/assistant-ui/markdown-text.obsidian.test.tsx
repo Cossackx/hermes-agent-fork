@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { MarkdownTextContent } from './markdown-text'
@@ -38,6 +38,19 @@ describe('Markdown Obsidian links', () => {
   ])('does not authorize malformed or unsupported links: %s', async href => {
     const { container } = render(<MarkdownTextContent isRunning={false} text={`[link](${href})`} />)
     await new Promise(resolve => setTimeout(resolve, 100))
-    expect(container.querySelector('a[href^="obsidian:"]')).toBeNull()
+    expect(container.querySelector('a')).toBeNull()
+  })
+
+  const md = '[Open note](obsidian://open?vault=Example&file=notes%2Fhello.md)'
+
+  it('leaves inline code untouched', async () => {
+    const { container } = render(<MarkdownTextContent isRunning={false} text={`\`${md}\``} />)
+    await waitFor(() => expect(container.querySelector('code')?.textContent).toBe(md))
+  })
+
+  it('leaves fenced code untouched', async () => {
+    const { container } = render(<MarkdownTextContent isRunning={false} text={'```text\n' + md + '\n```'} />)
+    await waitFor(() => expect(container.textContent).toContain(md))
+    expect(container.textContent).not.toContain('#hermes-obsidian/')
   })
 })
