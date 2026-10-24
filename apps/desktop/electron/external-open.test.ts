@@ -90,6 +90,26 @@ test('resolves invalid for a URL the route does not open, with no notify', async
   assert.equal(calls.notified.length, 0)
 })
 
+test('opens only validated Obsidian open links through the OS handler', async () => {
+  const { deps, calls } = makeDeps()
+  const safe = 'obsidian://open?vault=Example&file=notes%2Fhello.md'
+
+  assert.deepEqual(await openExternalUrl(safe, deps), { ok: true })
+  assert.deepEqual(calls.opened, ['obsidian://open?vault=Example&file=notes%2Fhello.md'])
+
+  for (const unsafe of [
+    'obsidian://new?vault=Example',
+    'obsidian://open?file=notes.md',
+    'obsidian://open?vault=Example&file=notes.md&evil=1',
+    'obsidian://open?vault=Example&file=notes.md%0A',
+    'vscode://file/notes.md'
+  ]) {
+    assert.deepEqual(await openExternalUrl(unsafe, deps), { ok: false, reason: 'invalid' }, unsafe)
+  }
+
+  assert.equal(calls.opened.length, 1)
+})
+
 test('dispatches file:// URLs to openFile', async () => {
   const { deps, calls } = makeDeps()
 

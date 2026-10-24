@@ -21,6 +21,7 @@ import { useMediaImage } from '@/hooks/use-media-image'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
+import { obsidianTargetFromMarkdownHref, rewriteObsidianMarkdownLinks } from '@/lib/obsidian-links'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
@@ -105,7 +106,7 @@ const REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkTranscript
 // identity is stable across renders.
 function preprocessWithTailRepair(text: string): string {
   try {
-    return tailBoundedRemend(preprocessMarkdown(text))
+    return tailBoundedRemend(rewriteObsidianMarkdownLinks(preprocessMarkdown(text)))
   } catch {
     return text
   }
@@ -279,6 +280,12 @@ function flattenChildrenToText(node: unknown): string {
 }
 
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
+  const obsidianTarget = obsidianTargetFromMarkdownHref(href)
+
+  if (obsidianTarget) {
+    return <PrettyLink className={cn('wrap-anywhere', className)} fallbackLabel={childrenToText(children)} href={obsidianTarget} {...props} />
+  }
+
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
@@ -335,6 +342,10 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
       ) : (
         <MediaAttachment path={fileHref} />
       )
+    }
+
+    if (href?.startsWith('obsidian:')) {
+      return <span className={cn('ref wrap-anywhere', className)}>{children}</span>
     }
 
     return (

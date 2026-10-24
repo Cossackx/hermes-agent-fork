@@ -70,6 +70,35 @@ export interface ExternalOpenDeps {
 
 const SUPPORTED_WEB = ['http:', 'https:', 'mailto:']
 
+function isSafeObsidianOpenUrl(url: URL, rawUrl: string): boolean {
+  if (
+    /[\u0000-\u001f\u007f]/.test(rawUrl) ||
+    url.protocol !== 'obsidian:' ||
+    url.hostname.toLowerCase() !== 'open' ||
+    url.username ||
+    url.password ||
+    url.port ||
+    (url.pathname !== '' && url.pathname !== '/') ||
+    url.hash
+  ) {
+    return false
+  }
+
+  const params = new URLSearchParams(url.search)
+  const vault = params.get('vault')
+  const file = params.get('file')
+  const keys = [...params.keys()]
+
+  return Boolean(
+    vault?.trim() &&
+      file?.trim() &&
+      keys.every(key => key === 'vault' || key === 'file') &&
+      new Set(keys).size === keys.length &&
+      !/[\u0000-\u001f\u007f]/.test(vault) &&
+      !/[\u0000-\u001f\u007f]/.test(file)
+  )
+}
+
 export function externalOpenErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -128,7 +157,7 @@ export async function openExternalUrl(rawUrl: string, deps: ExternalOpenDeps): P
     return { ok: true }
   }
 
-  if (!SUPPORTED_WEB.includes(parsed.protocol)) {
+  if (!SUPPORTED_WEB.includes(parsed.protocol) && !isSafeObsidianOpenUrl(parsed, raw)) {
     return { ok: false, reason: 'invalid' }
   }
 
