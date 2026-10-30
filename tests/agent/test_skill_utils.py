@@ -490,3 +490,62 @@ class TestBOMToleranceSiblingSites:
         assert fm is not None
         assert fm.get("name") == "bp"
 
+
+class TestSkillIndexHiding:
+    def test_essential_harness_skill_cannot_be_hidden(self):
+        from agent.skill_utils import is_skill_index_hidden
+
+        assert not is_skill_index_hidden("hermes-agent", ("hermes-agent",))
+        assert not is_skill_index_hidden("hermes-agent", ("*",))
+
+    def test_scalar_character_class_glob(self, monkeypatch):
+        from agent import skill_utils
+
+        monkeypatch.setattr(skill_utils, "_skills_cfg_get", lambda _key: "[ab]*")
+        patterns = skill_utils.get_skill_index_hidden_patterns()
+        assert patterns == ("[ab]*",)
+        assert skill_utils.is_skill_index_hidden("alpha", patterns)
+        assert not skill_utils.is_skill_index_hidden("charlie", patterns)
+
+    def test_config_defaults_expose_empty_index_hidden_setting(self):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["skills"]["index_hidden"] == []
+
+    def test_ordered_globs_allow_and_rehide_matching_names(self, tmp_path, monkeypatch):
+        from agent import skill_utils
+
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  index_hidden:\n    - 'threejs-*'\n    - '!threejs-skill-router'\n    - '!threejs-visual-validation'\n    - 'threejs-visual-validation'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_utils._raw_config_cache_clear()
+
+        patterns = getattr(skill_utils, "get_skill_index_hidden_patterns", lambda: ())()
+        is_hidden = getattr(skill_utils, "is_skill_index_hidden", lambda *_args: False)
+        assert patterns == (
+            "threejs-*", "!threejs-skill-router", "!threejs-visual-validation",
+            "threejs-visual-validation",
+        )
+        assert is_hidden("threejs-tool", patterns)
+        assert not is_hidden("threejs-skill-router", patterns)
+        assert is_hidden("threejs-visual-validation", patterns)
+        assert not is_hidden("plugin:threejs-skill-router", patterns)
+
+    def test_malformed_value_is_ignored(self, tmp_path, monkeypatch):
+        from agent import skill_utils
+
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  index_hidden:\n    unexpected: true\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_utils._raw_config_cache_clear()
+
+        get_patterns = getattr(skill_utils, "get_skill_index_hidden_patterns", None)
+        is_hidden = getattr(skill_utils, "is_skill_index_hidden", None)
+        assert callable(get_patterns)
+        assert callable(is_hidden)
+        assert get_patterns() == ()
+        assert not is_hidden("anything", get_patterns())
+

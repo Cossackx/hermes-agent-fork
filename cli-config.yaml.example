@@ -1214,6 +1214,13 @@ skills:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
 
+  # Hide skills from the system-prompt skills index only (ordered name globs; the
+  # last matching rule wins; a leading ! re-includes). The skill stays loadable via
+  # skills_list, skill_view, /skill and skills.auto_load.
+  # index_hidden:
+  #   - "threejs-*"
+  #   - "!threejs-skill-router"
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================

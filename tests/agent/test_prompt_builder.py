@@ -346,6 +346,107 @@ class TestBuildSkillsSystemPrompt:
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
 
+    def test_index_hidden_rules_rebuild_prompt_but_do_not_hide_explicit_access(
+        self, monkeypatch, tmp_path
+    ):
+        import json
+        from tools import skills_tool
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_root = tmp_path / "skills" / "tools"
+        for name in (
+            "threejs-model", "threejs-skill-router", "threejs-visual-validation", "ordinary-skill"
+        ):
+            skill_dir = skill_root / name
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {name} workflow\n---\n\n# {name}\n",
+                encoding="utf-8",
+            )
+
+        before = build_skills_system_prompt()
+        assert all(name in before for name in ("threejs-model", "threejs-skill-router", "ordinary-skill"))
+
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  index_hidden:\n    - 'threejs-*'\n    - '!threejs-skill-router'\n    - '!threejs-visual-validation'\n    - 'threejs-visual-validation'\n",
+            encoding="utf-8",
+        )
+        after = build_skills_system_prompt()
+        assert "threejs-model" not in after
+        assert "threejs-skill-router" in after
+        assert "threejs-visual-validation" not in after
+        assert "ordinary-skill" in after
+
+        skills_tool.clear_skills_cache()
+        listed = json.loads(skills_tool.skills_list())
+        assert any(skill["name"] == "threejs-model" for skill in listed["skills"])
+        viewed = json.loads(skills_tool.skill_view("threejs-model", preprocess=False))
+        assert viewed["success"] is True
+
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  disabled: [threejs-skill-router]\n  index_hidden:\n    - 'threejs-*'\n    - '!threejs-skill-router'\n",
+            encoding="utf-8",
+        )
+        disabled_after_reinclude = build_skills_system_prompt()
+        assert "threejs-skill-router" not in disabled_after_reinclude
+
+    def test_index_hidden_covers_project_external_and_plugin_index_rows(
+        self, monkeypatch, tmp_path
+    ):
+        from agent import prompt_builder
+        from agent import skill_utils
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "skills:\n  index_hidden: ['hide-*']\n", encoding="utf-8"
+        )
+        local, project, external = (tmp_path / name for name in ("local", "project", "external"))
+        for root, name in ((local, "keep-local"), (project, "hide-project"),
+                           (external, "hide-external")):
+            skill_dir = root / name
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {name}\n---\n", encoding="utf-8"
+            )
+        (local / "hide-local").mkdir()
+        (local / "hide-local" / "SKILL.md").write_text(
+            "---\nname: hide-local\ndescription: hide-local\n---\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            prompt_builder, "_plugin_skill_prompt_rows",
+            lambda *_args: [("plugin:hide-plugin", "hidden plugin"), ("plugin:keep-plugin", "visible plugin")],
+        )
+        monkeypatch.setattr(
+            skill_utils, "iter_project_skill_files",
+            lambda root: skill_utils.iter_skill_index_files(root, "SKILL.md"),
+        )
+
+        result = prompt_builder._build_skills_system_prompt_inner(
+            local,
+            [(skill_utils.TIER_PROJECT, project), (skill_utils.TIER_EXTERNAL, external)],
+            None, None, None,
+        )
+
+        assert "keep-local" in result
+        assert "keep-plugin" in result
+        assert "hide-local" not in result
+        assert "hide-project" not in result
+        assert "hide-external" not in result
+        assert "hide-plugin" not in result
+
+    def test_index_reinclude_cannot_reveal_incompatible_skill(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill = tmp_path / "skills" / "tools" / "hide-incompatible" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text(
+            "---\nname: hide-incompatible\ndescription: Incompatible fixture\nplatforms: [not-a-real-platform]\n---\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  index_hidden: ['hide-*', '!hide-incompatible']\n", encoding="utf-8")
+        assert "hide-incompatible" not in build_skills_system_prompt()
 
 # =========================================================================
 # Context files prompt builder

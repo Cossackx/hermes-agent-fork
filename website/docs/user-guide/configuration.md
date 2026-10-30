@@ -826,6 +826,17 @@ hermes config set skills.config.myplugin.path ~/myplugin-data
 
 For details on declaring config settings in your own skills, see [Creating Skills — Config Settings](../developer-guide/creating-skills.md#config-settings-configyaml).
 
+### Hiding skills from the prompt index
+
+`skills.index_hidden` hides matching names from the system-prompt `available_skills` index only. It does not disable a skill: `skills_list`, `skill_view`, explicit `/skill` loads, and `skills.auto_load` still work. Rules are ordered name globs (`*`, `?`, `[...]`); the last matching rule wins, and a leading `!` re-includes a name. Plugin skills match either their displayed qualified name (`plugin:skill`) or bare skill name. Essential harness skills (`hermes-agent`) remain indexed so hiding cannot suppress their prerequisites. Disabled or incompatible skills remain unavailable regardless of re-inclusion.
+
+```yaml
+skills:
+  index_hidden:
+    - 'threejs-*'
+    - '!threejs-skill-router'
+```
+
 ### Auto-loading skills every session
 
 Pin skills so they are fully loaded at the start of every new session, on every surface:

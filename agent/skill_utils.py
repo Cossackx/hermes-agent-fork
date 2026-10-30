@@ -2,6 +2,7 @@
 Import-light by design: no tool registry, CLI config, or provider resolution."""
 
 import ast
+from fnmatch import fnmatchcase
 import hashlib
 import logging
 import os
@@ -287,6 +288,38 @@ def get_disabled_skill_names(platform: str | None = None) -> set[str]:
     if platform_disabled is not None:
         disabled |= _normalize_string_set(platform_disabled)
     return disabled - ESSENTIAL_SKILLS
+
+
+def get_skill_index_hidden_patterns() -> tuple[str, ...]:
+    """Ordered ``skills.index_hidden`` glob rules for the system-prompt index only."""
+    raw = _skills_cfg_get("index_hidden")
+    if isinstance(raw, str):
+        if raw.strip().startswith("["):
+            try:
+                raw = ast.literal_eval(raw.strip())
+            except (ValueError, SyntaxError):
+                raw = [raw]  # A scalar glob can begin with a character class, e.g. [ab]*.
+        else:
+            raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(pattern.strip() for pattern in raw
+                 if isinstance(pattern, str) and pattern.strip() and pattern.strip() != "!")
+
+
+def is_skill_index_hidden(name: str, patterns: tuple[str, ...]) -> bool:
+    """Apply ordered hide/re-include globs to a displayed skill name and its bare plugin name."""
+    # Essential rows also carry harness prerequisites; index hiding must not suppress them.
+    if name in ESSENTIAL_SKILLS:
+        return False
+    names = (name, name.partition(":")[2]) if ":" in name else (name,)
+    hidden = False
+    for rule in patterns:
+        include = rule.startswith("!")
+        pattern = rule[1:] if include else rule
+        if pattern and any(fnmatchcase(candidate, pattern) for candidate in names):
+            hidden = not include
+    return hidden
 
 
 def parse_config_string_list(value) -> list[str]:

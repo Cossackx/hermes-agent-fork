@@ -60,6 +60,22 @@ def _captured_context_cwd(agent):
     return captured["cwd"]
 
 
+@pytest.mark.parametrize("hidden", ["hermes-agent", "*"])
+def test_index_hiding_preserves_essential_hermes_guidance(monkeypatch, tmp_path, hidden):
+    from agent.prompt_builder import HERMES_AGENT_HELP_GUIDANCE
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    skill = tmp_path / "skills" / "hermes-agent" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\nname: hermes-agent\ndescription: Hermes operating procedure\n---\n", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text(
+        f"skills:\n  index_hidden: ['{hidden}']\n", encoding="utf-8")
+    parts = build_system_prompt_parts(_make_agent(valid_tool_names={"skill_view"}))
+    assert "- hermes-agent:" in parts["volatile"]
+    assert HERMES_AGENT_HELP_GUIDANCE in parts["stable"]
+
+
 @pytest.mark.parametrize("task_id, expected", [(None, False), ("t_worker", True)])
 def test_kanban_guidance_requires_worker_task_at_agent_init(monkeypatch, task_id, expected):
     """A profile can expose kanban tools without making the session a worker."""
