@@ -48,6 +48,7 @@ import {
   mediaPathFromMarkdownHref,
   validImageDimensions
 } from '@/lib/media'
+import { obsidianTargetFromMarkdownHref } from '@/lib/obsidian-links'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { remarkSoftBreaks } from '@/lib/remark-soft-breaks'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
@@ -263,6 +264,19 @@ function flattenChildrenToText(node: unknown): string {
 }
 
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
+  const obsidianTarget = obsidianTargetFromMarkdownHref(href)
+
+  if (obsidianTarget) {
+    return (
+      <PrettyLink
+        className={cn('wrap-anywhere', className)}
+        fallbackLabel={childrenToText(children)}
+        href={obsidianTarget}
+        {...props}
+      />
+    )
+  }
+
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
@@ -324,6 +338,10 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
           )}
         </ToolMediaSlot>
       )
+    }
+
+    if (href?.startsWith('obsidian:')) {
+      return <span className={cn('ref wrap-anywhere', className)}>{children}</span>
     }
 
     return (

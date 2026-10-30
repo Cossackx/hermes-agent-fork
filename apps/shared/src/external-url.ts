@@ -9,6 +9,52 @@
 
 const WEB_PROTOCOLS = new Set(['http:', 'https:', 'mailto:'])
 
+/**
+ * `obsidian://open?vault=<name>&file=<path>` is the one custom scheme Desktop
+ * opens: a vault deep link an agent hands the user. Only that host and those two
+ * query keys, no credentials/port/path/fragment, no control characters, no
+ * malformed percent-escapes; anything else stays refused like any custom scheme.
+ */
+export function isSafeObsidianOpenUrl(rawUrl: string): boolean {
+  if (/\p{Cc}/u.test(rawUrl) || /%(?![\da-f]{2})/i.test(rawUrl)) {
+    return false
+  }
+
+  let url: URL
+
+  try {
+    url = new URL(rawUrl)
+  } catch {
+    return false
+  }
+
+  if (
+    url.protocol !== 'obsidian:' ||
+    url.hostname.toLowerCase() !== 'open' ||
+    url.username ||
+    url.password ||
+    url.port ||
+    (url.pathname !== '' && url.pathname !== '/') ||
+    url.hash
+  ) {
+    return false
+  }
+
+  const params = new URLSearchParams(url.search)
+  const vault = params.get('vault')
+  const file = params.get('file')
+  const keys = [...params.keys()]
+
+  return Boolean(
+    vault?.trim() &&
+      file?.trim() &&
+      keys.every(key => key === 'vault' || key === 'file') &&
+      new Set(keys).size === keys.length &&
+      !/\p{Cc}/u.test(vault) &&
+      !/\p{Cc}/u.test(file)
+  )
+}
+
 export interface ExternalUrlTarget {
   kind: 'file' | 'web'
   /** `web`: the normalized URL. `file`: the trimmed input, left for the host's file opener to parse. */
@@ -35,5 +81,9 @@ export function externalUrlTarget(rawUrl: string): ExternalUrlTarget | null {
     return { kind: 'file', url: raw }
   }
 
-  return WEB_PROTOCOLS.has(parsed.protocol) ? { kind: 'web', url: parsed.toString() } : null
+  if (WEB_PROTOCOLS.has(parsed.protocol)) {
+    return { kind: 'web', url: parsed.toString() }
+  }
+
+  return isSafeObsidianOpenUrl(raw) ? { kind: 'web', url: raw } : null
 }
